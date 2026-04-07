@@ -16,6 +16,8 @@ Arquivo principal do projeto. Responsavel por:
 - converter tempos absolutos e percentuais
 - montar segmentos
 - executar os cortes
+- gerar log JSON por execucao
+- verificar saidas com `ffprobe` quando solicitado
 
 ## Fluxo interno
 
@@ -25,6 +27,8 @@ Arquivo principal do projeto. Responsavel por:
 4. Normalizar os pontos de corte.
 5. Gerar a lista de segmentos.
 6. Executar `ffmpeg` para cada segmento com `-c copy`.
+7. Verificar as saidas quando `--verify` estiver ativo.
+8. Gravar um log estruturado na pasta de saida.
 
 ## Dependencias
 

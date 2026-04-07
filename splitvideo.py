@@ -1,27 +1,29 @@
 from __future__ import annotations
 
 import argparse
-import math
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
 
 VIDEO_EXTENSIONS = {
-    ".mp4",
+    ".avi",
     ".m4v",
     ".mkv",
     ".mov",
-    ".avi",
-    ".wmv",
-    ".webm",
-    ".mpg",
+    ".mp4",
     ".mpeg",
+    ".mpg",
     ".ts",
+    ".webm",
+    ".wmv",
 }
 
 
@@ -35,6 +37,25 @@ class Segment:
     start_seconds: float
     end_seconds: float
     output_path: Path
+
+
+@dataclass(frozen=True)
+class StreamInfo:
+    codec_name: str
+    codec_type: str
+
+
+@dataclass
+class ExecutionLog:
+    started_at: str
+    input_path: str
+    output_dir: str
+    duration_seconds: float
+    cuts_requested: list[str]
+    cuts_resolved: list[float]
+    name_mode: str
+    segments: list[dict]
+    verification: list[dict]
 
 
 def setup_console_output() -> None:
@@ -83,6 +104,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Monta os cortes e exibe os comandos sem executar ffmpeg.",
     )
+    parser.add_argument(
+        "--output-dir",
+        help="Pasta de saida. Se omitido, grava ao lado do video original.",
+    )
+    parser.add_argument(
+        "--name-mode",
+        choices=("verbose", "short"),
+        default="verbose",
+        help="Padrao dos nomes de arquivo gerados.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verifica codec e duracao das saidas com ffprobe apos cada corte.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Executa sem pedir confirmacao interativa.",
+    )
     return parser
 
 
@@ -97,9 +138,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.list:
             return 0
 
+        output_dir = resolve_output_dir(selected_video, args.output_dir)
         duration_seconds = probe_duration(selected_video, ffprobe_path)
+        original_streams = probe_streams(selected_video, ffprobe_path)
         print(
-            f"Arquivo: {selected_video}\nDuracao detectada: {format_seconds(duration_seconds)}"
+            f"Arquivo: {selected_video}\n"
+            f"Duracao detectada: {format_seconds(duration_seconds)}\n"
+            f"Saida: {output_dir}"
         )
 
         raw_cuts = collect_cut_tokens(args.cuts)
@@ -107,7 +152,33 @@ def main(argv: list[str] | None = None) -> int:
             raw_cuts = prompt_cut_tokens()
 
         cut_points = normalize_cut_points(raw_cuts, duration_seconds)
-        segments = build_segments(selected_video, cut_points, duration_seconds)
+        segments = build_segments(
+            selected_video=selected_video,
+            output_dir=output_dir,
+            cut_points=cut_points,
+            duration_seconds=duration_seconds,
+            name_mode=args.name_mode,
+        )
+
+        execution_log = ExecutionLog(
+            started_at=datetime.now().isoformat(timespec="seconds"),
+            input_path=str(selected_video),
+            output_dir=str(output_dir),
+            duration_seconds=duration_seconds,
+            cuts_requested=raw_cuts,
+            cuts_resolved=cut_points,
+            name_mode=args.name_mode,
+            segments=[
+                {
+                    "index": segment.index,
+                    "start_seconds": segment.start_seconds,
+                    "end_seconds": segment.end_seconds,
+                    "output_path": str(segment.output_path),
+                }
+                for segment in segments
+            ],
+            verification=[],
+        )
 
         print("\nPartes planejadas:")
         for segment in segments:
@@ -121,15 +192,21 @@ def main(argv: list[str] | None = None) -> int:
             print("\nDry run: nenhum arquivo foi gerado.")
             return 0
 
-        confirm = input("\nExecutar cortes? [s/N]: ").strip().lower()
-        if confirm not in {"s", "sim", "y", "yes"}:
-            print("Operacao cancelada.")
-            return 1
+        if not args.yes:
+            confirm = input("\nExecutar cortes? [s/N]: ").strip().lower()
+            if confirm not in {"s", "sim", "y", "yes"}:
+                print("Operacao cancelada.")
+                return 1
 
         for segment in segments:
             run_split_command(selected_video, segment, ffmpeg_path)
+            if args.verify:
+                execution_log.verification.append(
+                    verify_segment(segment, ffprobe_path, original_streams)
+                )
 
-        print("\nConcluido.")
+        log_path = write_execution_log(execution_log, output_dir)
+        print(f"\nConcluido.\nLog: {log_path}")
         return 0
     except SplitVideoError as exc:
         print(f"Erro: {exc}", file=sys.stderr)
@@ -159,13 +236,13 @@ def resolve_binary(name: str, override: str | None) -> Path:
     if found := shutil.which(name):
         candidates.append(Path(found))
 
-    script_dir = app_root()
+    root = app_root()
     candidates.extend(
         [
-            script_dir / f"{name}.exe",
-            script_dir / name,
-            script_dir / "tools" / f"{name}.exe",
-            script_dir / "tools" / name,
+            root / f"{name}.exe",
+            root / name,
+            root / "tools" / f"{name}.exe",
+            root / "tools" / name,
         ]
     )
 
@@ -175,7 +252,7 @@ def resolve_binary(name: str, override: str | None) -> Path:
 
     raise SplitVideoError(
         f"{name} nao encontrado. Use --{name} ou coloque {name}.exe no PATH ou em "
-        f"{script_dir}\\tools."
+        f"{root}\\tools."
     )
 
 
@@ -224,6 +301,14 @@ def resolve_video_target(target_path: Path, list_only: bool) -> Path:
     return videos[selected_index - 1]
 
 
+def resolve_output_dir(selected_video: Path, output_dir_value: str | None) -> Path:
+    if output_dir_value:
+        output_dir = Path(output_dir_value).expanduser()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir.resolve()
+    return selected_video.parent.resolve()
+
+
 def find_videos(directory: Path) -> list[Path]:
     return sorted(
         [
@@ -240,30 +325,16 @@ def is_video_file(path: Path) -> bool:
 
 
 def probe_duration(video_path: Path, ffprobe_path: Path) -> float:
-    command = [
-        str(ffprobe_path),
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(video_path),
-    ]
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+    completed = run_ffprobe(
+        ffprobe_path,
+        [
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
     )
-    if completed.returncode != 0:
-        raise SplitVideoError(
-            "ffprobe falhou ao ler a duracao do video.\n"
-            f"Comando: {' '.join(command)}\n"
-            f"Saida: {completed.stderr.strip() or completed.stdout.strip()}"
-        )
-
     output = completed.stdout.strip().replace(",", ".")
     try:
         duration = float(output)
@@ -273,6 +344,48 @@ def probe_duration(video_path: Path, ffprobe_path: Path) -> float:
     if duration <= 0:
         raise SplitVideoError("Duracao do video nao pode ser zero.")
     return duration
+
+
+def probe_streams(video_path: Path, ffprobe_path: Path) -> list[StreamInfo]:
+    completed = run_ffprobe(
+        ffprobe_path,
+        [
+            "-show_entries",
+            "stream=codec_name,codec_type",
+            "-of",
+            "json",
+            str(video_path),
+        ],
+    )
+    data = json.loads(completed.stdout)
+    streams = [
+        StreamInfo(
+            codec_name=stream.get("codec_name", ""),
+            codec_type=stream.get("codec_type", ""),
+        )
+        for stream in data.get("streams", [])
+    ]
+    if not streams:
+        raise SplitVideoError("Nenhum stream detectado no video.")
+    return streams
+
+
+def run_ffprobe(ffprobe_path: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    command = [str(ffprobe_path), "-v", "error", *arguments]
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if completed.returncode != 0:
+        raise SplitVideoError(
+            "ffprobe falhou.\n"
+            f"Comando: {' '.join(command)}\n"
+            f"Saida: {completed.stderr.strip() or completed.stdout.strip()}"
+        )
+    return completed
 
 
 def collect_cut_tokens(cuts: list[str]) -> list[str]:
@@ -297,10 +410,7 @@ def split_cut_list(raw_value: str) -> list[str]:
 
 
 def normalize_cut_points(raw_cuts: Iterable[str], duration_seconds: float) -> list[float]:
-    resolved_points: list[float] = []
-    for raw_cut in raw_cuts:
-        resolved_points.append(parse_cut_token(raw_cut, duration_seconds))
-
+    resolved_points = [parse_cut_token(raw_cut, duration_seconds) for raw_cut in raw_cuts]
     sorted_unique = sorted({round(point, 6) for point in resolved_points})
     if not sorted_unique:
         raise SplitVideoError("Nenhum ponto de corte valido foi gerado.")
@@ -318,10 +428,8 @@ def parse_cut_token(raw_cut: str, duration_seconds: float) -> float:
             percentage = float(percentage_text)
         except ValueError as exc:
             raise SplitVideoError(f"Percentual invalido: {raw_cut}") from exc
-
         if not 0 < percentage < 100:
             raise SplitVideoError(f"Percentual fora do intervalo: {raw_cut}")
-
         seconds = duration_seconds * (percentage / 100.0)
     else:
         seconds = parse_time_value(value)
@@ -348,7 +456,10 @@ def parse_time_value(value: str) -> float:
         raise SplitVideoError(f"Tempo invalido: {value}")
 
     try:
-        numbers = [float(part) if index == len(parts) - 1 else int(part) for index, part in enumerate(parts)]
+        numbers = [
+            float(part) if index == len(parts) - 1 else int(part)
+            for index, part in enumerate(parts)
+        ]
     except ValueError as exc:
         raise SplitVideoError(f"Tempo invalido: {value}") from exc
 
@@ -369,26 +480,45 @@ def parse_time_value(value: str) -> float:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def build_segments(video_path: Path, cut_points: list[float], duration_seconds: float) -> list[Segment]:
-    base_name = video_path.stem
-    suffix = video_path.suffix
+def build_segments(
+    selected_video: Path,
+    output_dir: Path,
+    cut_points: list[float],
+    duration_seconds: float,
+    name_mode: str,
+) -> list[Segment]:
     boundaries = [0.0, *cut_points, duration_seconds]
     segments: list[Segment] = []
 
     for index, (start, end) in enumerate(zip(boundaries, boundaries[1:]), start=1):
-        output_name = (
-            f"{base_name}_{index:03d}_{slugify_timestamp(start)}-"
-            f"{slugify_timestamp(end)}{suffix}"
-        )
+        output_name = build_output_name(selected_video, index, start, end, name_mode)
         segments.append(
             Segment(
                 index=index,
                 start_seconds=start,
                 end_seconds=end,
-                output_path=video_path.with_name(output_name),
+                output_path=(output_dir / output_name).resolve(),
             )
         )
     return segments
+
+
+def build_output_name(
+    selected_video: Path, index: int, start_seconds: float, end_seconds: float, name_mode: str
+) -> str:
+    stem = selected_video.stem if name_mode == "verbose" else sanitize_basename(selected_video.stem)
+    suffix = selected_video.suffix
+    start_slug = slugify_timestamp(start_seconds)
+    end_slug = slugify_timestamp(end_seconds)
+    if name_mode == "short":
+        return f"{stem}_{index:03d}_{start_slug}_{end_slug}{suffix}"
+    return f"{stem}_{index:03d}_{start_slug}-{end_slug}{suffix}"
+
+
+def sanitize_basename(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("._-")
+    return sanitized or "video"
 
 
 def run_split_command(video_path: Path, segment: Segment, ffmpeg_path: Path) -> None:
@@ -417,6 +547,37 @@ def run_split_command(video_path: Path, segment: Segment, ffmpeg_path: Path) -> 
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         raise SplitVideoError(f"ffmpeg falhou ao gerar: {segment.output_path}")
+
+
+def verify_segment(
+    segment: Segment, ffprobe_path: Path, original_streams: list[StreamInfo]
+) -> dict:
+    duration = probe_duration(segment.output_path, ffprobe_path)
+    streams = probe_streams(segment.output_path, ffprobe_path)
+    verification = {
+        "output_path": str(segment.output_path),
+        "duration_seconds": duration,
+        "expected_duration_seconds": round(segment.end_seconds - segment.start_seconds, 6),
+        "streams_match": [(s.codec_type, s.codec_name) for s in streams]
+        == [(s.codec_type, s.codec_name) for s in original_streams],
+        "streams": [asdict(stream) for stream in streams],
+    }
+    print(
+        "Verificacao:"
+        f" duracao={format_seconds(duration)}"
+        f", codecs_ok={'sim' if verification['streams_match'] else 'nao'}"
+    )
+    return verification
+
+
+def write_execution_log(execution_log: ExecutionLog, output_dir: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = output_dir / f"splitvideo_log_{timestamp}.json"
+    log_path.write_text(
+        json.dumps(asdict(execution_log), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return log_path
 
 
 def format_seconds(seconds: float) -> str:

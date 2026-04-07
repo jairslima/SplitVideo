@@ -18,6 +18,21 @@ O script procura `ffmpeg` e `ffprobe` nesta ordem:
 4. a propria pasta do projeto
 5. `tools\ffmpeg.exe` e `tools\ffprobe.exe`
 
+## Posso chamar de qualquer pasta do terminal?
+
+Nao por padrao. Depois de instalar o comando global, sim.
+
+```powershell
+cd C:\Users\jairs\Codex\SplitVideo
+.\install-user-command.ps1
+```
+
+Depois de abrir um novo terminal, voce pode chamar:
+
+```powershell
+splitvideo "C:\Videos\arquivo.mp4" "16:47,50%"
+```
+
 ## Uso
 
 Sem parametro, usa a pasta atual:
@@ -43,6 +58,14 @@ Tambem aceita cortes direto na linha de comando:
 ```powershell
 splitvideo.cmd "C:\Videos\arquivo.mp4" 16:47 50%
 splitvideo.cmd "C:\Videos" "5:00, 16:47, 50%"
+```
+
+Opcoes uteis:
+
+```powershell
+splitvideo.cmd "C:\Videos\arquivo.mp4" "16:47,50%" --output-dir "C:\Saida"
+splitvideo.cmd "C:\Videos\arquivo.mp4" "16:47,50%" --name-mode short
+splitvideo.cmd "C:\Videos\arquivo.mp4" "16:47,50%" --verify --yes
 ```
 
 ## Executavel
@@ -78,6 +101,10 @@ Exemplo:
 - Tempo absoluto: `16:47`, `01:16:47`, `70`
 - Percentual: `50%`
 - Multiplos cortes: `5:00, 16:47, 50%`
+- `--output-dir` para gravar em outra pasta
+- `--name-mode short` para nomes mais curtos e seguros
+- `--verify` para validar codec e duracao das saidas
+- Log JSON automatico por execucao
 
 Os pontos sao ordenados e deduplicados antes da execucao.
 

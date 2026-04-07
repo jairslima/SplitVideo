@@ -28,6 +28,23 @@ O app lista os videos encontrados e pede a selecao.
 
 Se nenhum caminho for passado, a busca e feita no diretorio atual.
 
+## Usar de qualquer pasta
+
+Para instalar o comando global no perfil do usuario:
+
+```powershell
+cd C:\Users\jairs\Codex\SplitVideo
+.\install-user-command.ps1
+```
+
+Isso cria um atalho em `%USERPROFILE%\bin` e adiciona essa pasta ao `Path` do usuario.
+
+Depois de abrir um novo terminal:
+
+```powershell
+splitvideo "C:\Videos\arquivo.mp4" "16:47,50%"
+```
+
 ## Formatos de corte
 
 - Tempo absoluto em segundos: `70`
@@ -42,6 +59,10 @@ Se nenhum caminho for passado, a busca e feita no diretorio atual.
 - Pontos repetidos sao removidos.
 - O valor precisa estar dentro da duracao do video.
 - Percentuais usam a duracao real retornada por `ffprobe`.
+- `--output-dir` muda a pasta de destino.
+- `--name-mode short` gera nomes mais curtos e mais seguros para terminais e compartilhamento.
+- `--verify` valida as saidas com `ffprobe`.
+- Cada execucao grava um log JSON na pasta de saida.
 
 ## Exemplo de saida
 
@@ -50,6 +71,12 @@ Se o video `aula.mp4` for dividido em `10:00` e `50%`, o app gera arquivos no me
 - `aula_001_00-00-00-00-10-00.mp4`
 - `aula_002_00-10-00-00-42-30_500.mp4`
 - `aula_003_00-42-30_500-01-25-01.mp4`
+
+## Exemplo com pasta de saida e verificacao
+
+```powershell
+splitvideo "C:\Videos\aula.mp4" "10:00,50%" --output-dir "C:\Cortes" --verify --yes
+```
 
 ## Observacao tecnica
 

@@ -12,15 +12,15 @@ Aceitar arrastar um arquivo para o `.exe` ou para a janela da futura GUI melhora
 
 ### Perfil de nomes
 
-Adicionar opcoes para controlar o nome das saidas, como sufixos curtos, prefixos numericos ou subpasta de destino.
+Ja existe `--name-mode short`, mas ainda vale adicionar modelos extras de nomenclatura e presets por projeto.
 
 ### Log persistente
 
-Gravar um log por execucao com entrada, duracao, cortes calculados e comandos executados facilitaria auditoria.
+Ja existe log JSON por execucao. O proximo passo util e exportar tambem em `.txt` para leitura rapida.
 
 ### Validacao por streams
 
-Adicionar verificacao opcional pos-corte com `ffprobe` para confirmar codecs, duracao e streams presentes em cada parte.
+Ja existe `--verify`, mas ainda vale acrescentar tolerancias configuraveis e comparacao mais rica de streams.
 
 ### Corte mais preciso
 
